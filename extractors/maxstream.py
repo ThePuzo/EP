@@ -174,7 +174,6 @@ class MaxstreamExtractor:
         
         chrome_args = ["--no-sandbox", "--disable-setuid-sandbox", "--disable-gpu"]
         if real_ips:
-            # Force Chromium to use real IP instead of hijacked DNS
             ip = real_ips[0]
             chrome_args.append(f"--host-resolver-rules=MAP {domain} {ip}")
             logger.info(f"Playwright: forcing {domain} -> {ip} via host-resolver-rules")
@@ -192,53 +191,119 @@ class MaxstreamExtractor:
                 )
                 page = await context.new_page()
                 
-                # Navigate to uprot page
                 resp = await page.goto(link, wait_until="domcontentloaded", timeout=30000)
                 
                 # If Cloudflare challenge, wait for it to resolve
                 if resp and resp.status == 403:
                     logger.info("Playwright: Cloudflare challenge detected, waiting...")
                     try:
-                        await page.wait_for_url(lambda url: "uprot.net" in url, timeout=15000)
-                        await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                        await page.wait_for_load_state("networkidle", timeout=15000)
                     except Exception:
-                        pass  # Continue anyway, page might have loaded
+                        pass
                 
-                # Wait for the redirect link to appear
-                try:
-                    await page.wait_for_selector("a[href*='maxstream'], a[href*='stayonline'], a", timeout=20000)
-                except Exception:
-                    logger.debug(f"Playwright: selector wait timed out, checking page anyway")
+                # Log page URL and title for debug
+                page_url = page.url
+                page_title = await page.title()
+                logger.info(f"Playwright: page loaded - URL: {page_url}, Title: {page_title}")
                 
-                # Extract href from first <a> tag
+                # Strategy 1: Find specific continue/redirect link (NOT generic <a>)
                 href = await page.evaluate("""() => {
-                    let a = document.querySelector('a[href*="maxstream"]') 
-                         || document.querySelector('a[href*="stayonline"]')
-                         || document.querySelector('a');
-                    return a ? a.href : null;
+                    // Look for links specifically pointing to maxstream or stayonline
+                    let a = document.querySelector('a[href*="maxstream"]')
+                         || document.querySelector('a[href*="stayonline"]');
+                    if (a) return a.href;
+                    
+                    // Look for button-like continue links
+                    let btn = document.querySelector('a.button, a.btn, a[class*="continue"], a[class*="redirect"]');
+                    if (btn) return btn.href;
+                    
+                    // Look for centered/main content links (not nav)
+                    let mainLinks = document.querySelectorAll('main a, .content a, #content a, .container a');
+                    for (let link of mainLinks) {
+                        let h = link.href;
+                        if (h && !h.includes('uprot.net') && (h.includes('maxstream') || h.includes('stayonline') || h.includes('/e/') || h.includes('/video/'))) {
+                            return h;
+                        }
+                    }
+                    return null;
                 }""")
                 
                 if href:
                     logger.info(f"Playwright extracted uprot redirect: {href}")
                     return href
                 
-                # Check if page redirected to maxstream directly
+                # Strategy 2: Click any visible button/link and follow redirect
+                try:
+                    await page.click("a.button, a.btn, button.button, input[type='submit'], a[href*='maxstream'], a[href*='stayonline']", timeout=5000)
+                    await page.wait_for_load_state("domcontentloaded", timeout=10000)
+                    new_url = page.url
+                    if new_url != page_url:
+                        logger.info(f"Playwright: clicked through to: {new_url}")
+                        return new_url
+                except Exception as e:
+                    logger.debug(f"Playwright: click strategy failed: {e}")
+                
+                # Strategy 3: Check if already redirected
                 current_url = page.url
                 if "maxstream" in current_url or "stayonline" in current_url:
                     logger.info(f"Playwright followed redirect to: {current_url}")
                     return current_url
                 
-                # Last try: get page content and parse
+                # Log full page for debug
                 content = await page.content()
-                logger.debug(f"Playwright page content (first 500): {content[:500]}")
-                soup = BeautifulSoup(content, "lxml")
-                a_tag = soup.find("a")
-                if a_tag and a_tag.get("href"):
-                    return a_tag["href"]
-                
+                logger.error(f"Playwright: could not find redirect. Page URL: {current_url}, Content (500): {content[:500]}")
                 raise ExtractorError(f"Playwright could not find redirect on uprot page")
             finally:
                 await browser.close()
+
+    async def _resolve_stayonline(self, stayonline_url: str) -> str:
+        """Resolve stayonline.pro wrapper to get final maxstream URL."""
+        try:
+            # Try AJAX endpoint first (stayonline uses /ajax/linkView)
+            from urllib.parse import urlparse
+            parsed = urlparse(stayonline_url)
+            path_parts = parsed.path.strip('/').split('/')
+            link_id = path_parts[-1] if path_parts else ''
+            
+            if link_id:
+                ajax_url = f"{parsed.scheme}://{parsed.netloc}/ajax/linkView"
+                headers = {
+                    **self.base_headers,
+                    "referer": stayonline_url,
+                    "x-requested-with": "XMLHttpRequest",
+                    "content-type": "application/x-www-form-urlencoded",
+                }
+                text = await self._smart_request(
+                    ajax_url, method="POST",
+                    headers=headers,
+                    data={"id": link_id}
+                )
+                # Response should contain the real URL
+                import json
+                try:
+                    data = json.loads(text)
+                    real_url = data.get("url") or data.get("link") or data.get("href")
+                    if real_url:
+                        logger.info(f"StayOnline resolved via AJAX: {real_url}")
+                        return real_url
+                except json.JSONDecodeError:
+                    pass
+                
+                # Maybe direct URL in response
+                url_match = re.search(r'https?://[^"\s<>]+maxstream[^"\s<>]+', text)
+                if url_match:
+                    logger.info(f"StayOnline resolved via regex: {url_match.group(0)}")
+                    return url_match.group(0)
+        except Exception as e:
+            logger.warning(f"StayOnline AJAX resolution failed: {e}")
+        
+        # Fallback: load page and scrape
+        text = await self._smart_request(stayonline_url)
+        url_match = re.search(r'https?://[^"\s<>]*maxstream[^"\s<>]*', text)
+        if url_match:
+            return url_match.group(0)
+        
+        raise ExtractorError(f"Could not resolve stayonline URL: {stayonline_url}")
 
     async def get_uprot(self, link: str):
         """Extract MaxStream URL from uprot redirect."""
@@ -274,6 +339,12 @@ class MaxstreamExtractor:
     async def extract(self, url: str, **kwargs) -> dict:
         """Extract Maxstream URL."""
         maxstream_url = await self.get_uprot(url)
+        logger.info(f"Uprot resolved to: {maxstream_url}")
+        
+        # Handle stayonline.pro intermediate wrapper
+        if "stayonline" in maxstream_url:
+            maxstream_url = await self._resolve_stayonline(maxstream_url)
+            logger.info(f"StayOnline resolved to: {maxstream_url}")
         
         text = await self._smart_request(maxstream_url, headers={"accept-language": "en-US,en;q=0.5"})
 
