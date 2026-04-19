@@ -147,6 +147,9 @@ APP_VERSION = "2.5.0"
 _has_solvers = os.path.exists("flaresolverr") and (os.path.exists("byparr") or os.path.exists("byparr_src"))
 VERSION_MODE = "Full" if _has_solvers else "Light"
 
+# --- WARP Configuration ---
+ENABLE_WARP = os.environ.get("ENABLE_WARP", "false").lower() == "true"
+
 # Create recordings directory if DVR is enabled
 if DVR_ENABLED and not os.path.exists(RECORDINGS_DIR):
     os.makedirs(RECORDINGS_DIR)

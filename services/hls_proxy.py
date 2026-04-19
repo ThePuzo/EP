@@ -43,6 +43,7 @@ from config import (
     MPD_MODE,
     VERSION_MODE,
     APP_VERSION,
+    ENABLE_WARP,
 )
 from extractors.generic import GenericHLSExtractor, ExtractorError
 from services.manifest_rewriter import ManifestRewriter
@@ -342,10 +343,33 @@ class HLSProxy:
 
         # Version information
         self.latest_version = "Checking..."
+        self.warp_status = "Disabled" if not ENABLE_WARP else "Checking..."
 
     async def start_tasks(self):
         """Starts background tasks for the proxy."""
         asyncio.create_task(self._update_latest_version())
+        # Always start WARP check (universal trace method)
+        asyncio.create_task(self._update_warp_status_loop())
+
+    async def _update_warp_status_loop(self):
+        """Periodically checks WARP status via Cloudflare trace (Universal)."""
+        while True:
+            try:
+                # We use the internal session to check the actual connection state
+                session = await self._get_session()
+                async with session.get("https://www.cloudflare.com/cdn-cgi/trace", timeout=5) as resp:
+                    if resp.status == 200:
+                        text = await resp.text()
+                        if "warp=on" in text:
+                            self.warp_status = "Connected"
+                        else:
+                            self.warp_status = "Disconnected"
+                    else:
+                        self.warp_status = "Error"
+            except Exception:
+                self.warp_status = "Disconnected"
+            
+            await asyncio.sleep(60) # Check every minute
 
     async def _update_latest_version(self):
         """Checks GitHub config.py for the latest version."""
@@ -2687,6 +2711,7 @@ class HLSProxy:
             html_content = html_content.replace("{{APP_VERSION}}", APP_VERSION)
             html_content = html_content.replace("{{LATEST_VERSION}}", self.latest_version)
             html_content = html_content.replace("{{VERSION_STATUS_CLASS}}", version_status_class)
+            html_content = html_content.replace("{{WARP_STATUS}}", self.warp_status)
             return web.Response(text=html_content, content_type="text/html")
         except Exception as e:
             logger.error(f"❌ Critical error: unable to load 'index.html': {e}")
@@ -2761,6 +2786,7 @@ class HLSProxy:
             html_content = html_content.replace("{{APP_VERSION}}", APP_VERSION)
             html_content = html_content.replace("{{LATEST_VERSION}}", self.latest_version)
             html_content = html_content.replace("{{VERSION_STATUS_CLASS}}", version_status_class)
+            html_content = html_content.replace("{{WARP_STATUS}}", self.warp_status)
             return web.Response(text=html_content, content_type="text/html")
         except Exception as e:
             logger.error(f"❌ Critical error: unable to load 'info.html': {e}")
