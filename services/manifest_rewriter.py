@@ -299,9 +299,10 @@ class ManifestRewriter:
                 if skip_next_url:
                     skip_next_url = False
                     continue
-                if i == highest_quality_stream["index"]:
-                    continue
                 if any(stream["index"] == i for stream in generic_streams):
+                    if i == highest_quality_stream["index"]:
+                        skip_next_url = True
+                        continue
                     skip_next_url = True
                     continue
                 if stripped.startswith("#EXT-X-MEDIA:"):
