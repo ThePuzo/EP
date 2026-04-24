@@ -590,8 +590,7 @@ class HLSProxy:
         # Patterns for domains that usually block Cloudflare/WARP
         # Cinemacity, VixSrc, etc.
         bypass_patterns = [
-            "cccdn.net", "cinemacity.cc", "strem.fun", "torrentio.strem.fun",
-            "vavoo.to", "vavoo.tv", "lokke.app"
+            "cccdn.net", "cinemacity.cc", "strem.fun", "torrentio.strem.fun"
         ]
         
         try:
@@ -1310,9 +1309,7 @@ class HLSProxy:
             return web.Response(status=401, text="Unauthorized: Invalid API Password")
 
         target_url = request.query.get("url") or request.query.get("d")
-        bypass_warp = (request.query.get("warp", "").lower() == "off") or (
-            target_url and ("vavoo.to" in target_url or "vavoo.tv" in target_url)
-        )
+        bypass_warp = (request.query.get("warp", "").lower() == "off")
         token = BYPASS_WARP_CONTEXT.set(bypass_warp)
         proxy_token = SELECTED_PROXY_CONTEXT.set(None)
         
