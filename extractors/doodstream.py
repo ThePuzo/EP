@@ -54,6 +54,7 @@ class DoodStreamExtractor:
         self.base_headers = self.request_headers.copy()
         self.base_headers["User-Agent"] = _DOOD_UA
         self.proxies = proxies or []
+        self.last_used_proxy = None
         self.mediaflow_endpoint = "proxy_stream_endpoint"
         self.cache = CookieCache("dood")
 
@@ -76,6 +77,7 @@ class DoodStreamExtractor:
         if not proxy_url:
             return None
         proxy_url = self._normalize_proxy_url(proxy_url)
+        self.last_used_proxy = proxy_url
         return {"http": proxy_url, "https": proxy_url}
 
     def _extract_pass_path(self, html: str) -> str | None:
@@ -310,6 +312,7 @@ class DoodStreamExtractor:
             "destination_url": final_url,
             "request_headers": {"User-Agent": ua, "Referer": f"{base_url}/", "Accept": "*/*"},
             "mediaflow_endpoint": self.mediaflow_endpoint,
+            "selected_proxy": self.last_used_proxy,
         }
 
     async def close(self):
